@@ -1,0 +1,367 @@
+
+<!-- begin.rcode setup, echo=FALSE, warning=FALSE, message=FALSE 
+library(readr)
+library(dplyr)
+library(reshape2)
+library(stringr)
+library(lubridate)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(cetcolor)
+library(knitr)
+
+shift_factor = -0.18
+
+sc_rel_df = read_csv('subreddit_comment_relationships.csv')
+
+st_rel_df = read_csv('subreddit_thread_relationships.csv')
+
+csubs = c('China','Sino','HongKong','Hong_Kong')
+
+com_weights = read_csv('general_comment_weights.csv')
+t_weights = read_csv('general_thread_weights.csv')
+
+hcom_weights = read_csv('hongkong_comment_weights.csv')
+ht_weights = read_csv('hongkong_thread_weights.csv')
+
+theme_readable = theme(plot.title=element_text(size=rel(1.5)), plot.subtitle=element_text(size=rel(1.5))) + 
+  theme(
+    strip.text = element_text(size=rel(1.5))
+    
+  )
+
+
+target_transpose <- function(data){
+  data2 = data
+  data2 = data2 %>% mutate(
+    source = data$target,
+    target = data$source,
+    sub_1_count = data$sub_2_count,
+    sub_2_count = data$sub_1_count,
+    average_ratio = 1/average_ratio
+  )
+  data2
+}
+
+cmutate <- function(data){
+  data %>%
+    filter(
+      source %in% csubs | target %in% csubs
+    ) %>%
+    mutate(
+      sub1 = ifelse(
+        source %in% csubs,
+        source,
+        target
+      ),
+      sub2 = ifelse(
+        source %in% csubs,
+        target,
+        source 
+      )
+    )
+}
+
+# comments
+top_comments = sc_rel_df %>%
+  dplyr::union_all((sc_rel_df %>% target_transpose())) %>% 
+  filter(source %in% csubs | target %in% csubs)
+  
+selected_comments_adj = top_comments %>% 
+  filter(
+  source %in% csubs & weight >= 3
+) %>%
+  left_join(com_weights %>% rename(target=subreddit), on='target') %>%
+  group_by(source) %>%
+  mutate(adj_weight = weight/(n_authors+10), adj_weight=adj_weight/max(adj_weight,na.rm=T)) %>%
+  arrange(desc(adj_weight)) %>%
+  mutate(rank = 1:n()) %>%
+  ungroup() %>%
+  filter(rank <= 10) %>%
+  arrange(source, rank)
+
+selected_comments_adjh = top_comments %>% 
+  filter(
+    source %in% csubs & weight >= 3
+  ) %>%
+  left_join(hcom_weights %>% rename(target=subreddit), on='target') %>%
+  group_by(source) %>%
+  mutate(adj_weight = weight/(n_authors+10), adj_weight=adj_weight/max(adj_weight,na.rm=T)) %>%
+  arrange(desc(adj_weight)) %>%
+  mutate(rank = 1:n()) %>%
+  ungroup() %>%
+  filter(rank <= 10) %>%
+  arrange(source, rank)
+
+selected_comments = top_comments %>% 
+  filter(
+    source %in% csubs & weight >= 3
+  ) %>%
+  left_join(com_weights %>% rename(target=subreddit), on='target') %>%
+  group_by(source) %>%
+  mutate(adj_weight = weight/(n_authors+10), adj_weight=adj_weight/max(adj_weight, na.rm=T), weight=weight/max(weight,na.rm=T)) %>%
+  arrange(desc(weight)) %>%
+  mutate(rank = 1:n()) %>%
+  ungroup() %>%
+  filter(rank <= 10) %>%
+  arrange(source, rank)
+
+# threads
+top_threads = st_rel_df %>%
+  dplyr::union_all((st_rel_df %>% target_transpose())) %>% 
+  filter(source %in% csubs | target %in% csubs)
+
+selected_threads_adj = top_threads %>% 
+  filter(
+    source %in% csubs
+  ) %>%
+  left_join(t_weights %>% rename(target=subreddit), on='target') %>%
+  group_by(source) %>%
+  mutate(adj_weight = weight/(n_authors+10), adj_weight=adj_weight/max(adj_weight,na.rm=T)) %>%
+  arrange(desc(adj_weight)) %>%
+  mutate(rank = 1:n()) %>%
+  ungroup() %>%
+  filter(rank <= 10) %>%
+  arrange(source, rank)
+
+selected_threads_adjh = top_threads %>% 
+  filter(
+    source %in% csubs
+  ) %>%
+  left_join(ht_weights %>% rename(target=subreddit), on='target') %>%
+  group_by(source) %>%
+  mutate(adj_weight = weight/(n_authors+10), adj_weight=adj_weight/max(adj_weight,na.rm=T)) %>%
+  arrange(desc(adj_weight)) %>%
+  mutate(rank = 1:n()) %>%
+  ungroup() %>%
+  filter(rank <= 10) %>%
+  arrange(source, rank)
+
+
+
+selected_threads = top_threads %>% 
+  filter(
+    source %in% csubs
+  ) %>%
+  left_join(t_weights %>% rename(target=subreddit), on='target') %>%
+  group_by(source) %>%
+  mutate(adj_weight = weight/n_authors, weight=weight/max(weight, na.rm=T)) %>%
+
+  arrange(desc(weight)) %>%
+  mutate(rank = 1:n()) %>%
+  ungroup() %>%
+  filter(rank <= 10) %>%
+  arrange(source, rank)
+
+comment_creddit = read_csv('comment_creddit_scores.csv')
+thread_creddit = read_csv('thread_creddit_scores.csv')
+creddit = bind_rows(
+  comment_creddit %>% mutate(type='comment'),
+  thread_creddit %>% mutate(type='submission')
+)
+
+ngrams = read_csv('hongkong_ngrams.csv')
+
+max_ratio <- function(x){
+  x/sapply(1:length(x), function(i) max(x[-i]))
+}
+
+ranked_ngrams = ngrams %>% 
+  filter(!grepl('\\?|\\.', text)) %>%
+  group_by(category) %>%
+  mutate(prop = prop.table(total_count)) %>%
+  ungroup() %>%
+  group_by(text) %>%
+  filter(sum(total_count > 10) > 2) %>%
+  mutate(
+    ratio = max_ratio(prop)
+  ) %>% 
+  filter(
+    ratio > 1
+  ) %>%
+  ungroup() %>%
+  group_by(category) %>%
+  arrange(desc(ratio)) %>%
+  mutate(
+    rank = 1:n()
+  ) %>%
+  ungroup() %>%
+  arrange(category, rank)
+
+end.rcode-->
+
+<p> Beginning in the Spring of this year, protests began in Hong Kong over the <a target="_blank" id="wiki_hk_extradition_bill_out" href="https://en.wikipedia.org/wiki/2019_Hong_Kong_extradition_bill"> Fugitive Offenders and Mutual Legal Assistance in Criminal Matters Legislation (Amendment) Bill</a>, which would allow fugitives to be extradited from Hong Kong to China. </p>
+
+<p> One large online community that has gotten involved with the protests is Reddit, which has a community called <a id="reddit_hongkong_out" target="_blank" href="https://old.reddit.com/r/HongKong">/r/HongKong</a>, which is largely in favor of the protestors' cause. <a href="https://old.reddit.com/r/China" target="_blank" id="reddit_china_out">/r/China</a> is another subreddit that has some (but significantly less) involvement in Hong Kong's affairs, but also leans towards the protestors' cause. </p>
+
+<p> On the other side of the issue, <a href="https://old.reddit.com/r/Hong_Kong" id="reddit_hong_kong_out" target="_blank">/r/Hong_Kong</a> is overwhelmingly against the protestors' cause, as well as the more nationalist <a href="https://old.reddit.com/r/Sino" id="reddit_sino_out" target="_blank">/r/Sino</a> counterpart to /r/China. </p>
+
+<p> I collected a sample of 32,491 users who have commented and/or posted in one of those subreddits, and looked at their comment and submission histories since March 31st of this year. While one could simply look at which subreddits appear the most in these users' submission and comment histories, a lot of the big, default subreddits would take up most of the top spots. By scaling These values to the subreddit's respective sizes, we can get a better idea of what makes these communities more unique.</p>
+
+<h2> Words and Phrases (what makes these distinct from each other?) </h2>
+
+<p> I processed different words and phrases (including up to 3-character Chinese character sequences) in each of the subreddits and looked at which ones were more frequent (in terms of proportion) in one subreddit vs. any of the others. "laowai" is Chinese for "foreigner", which makes sense for /r/China, considering that other common words appear to be related to teaching English there. </p>
+
+<p>"lennon" for /r/HongKong refers to the <a href="https://en.wikipedia.org/wiki/Lennon_Wall_(Hong_Kong)" id="wiki_lennon_wall_out" target="_blank">"Lennon Wall"</a>, which was a mosaic made of encouraging post-it notes during the 2014 Umbrella Protests in Hong Kong. "tvb" refers to a television broadcasting company in Hong Kong.  Most of the words and phrases representing /r/HongKong here are related to the recent protests.</p>
+
+<p> Other than the reference to the 1989 Tiananmen Square Massacre, I am not sure why the below phrases are appearing for /r/Hong_Kong.</p>
+
+<p> For /r/Sino, there appears to be a large focus around race, specifically. </p>
+
+<!-- begin.rcode echo=FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12
+
+print(
+ggplot(ranked_ngrams %>% rename(subreddit=category) %>% filter(rank <= 15)) + 
+  geom_bar(aes(x=rank, y=ratio, fill=subreddit), stat='identity') + 
+  geom_label(aes(x=rank, y=ratio, label=text), hjust='inward', size=3.5) + 
+  facet_grid(.~subreddit, scales='free') + 
+  coord_flip() + 
+  scale_x_reverse('Rank', breaks=1:15) + 
+  scale_y_continuous('Ratio vs. Next Highest') + 
+  ggtitle('Most Distinctive Phrases Used Among Hong Kong-related Subreddits') + 
+  theme_bw() + theme_readable +
+  theme(plot.title=element_text(size=rel(2))) + 
+  scale_fill_discrete('Subreddit') + 
+  guides(fill=FALSE)
+
+)
+
+end.rcode-->
+
+<h2> Risk Score of Being Banned </h2>
+
+<p> I am currently testing out a "Creddit" risk score, which can also be accessed by my <a href="https://old.reddit.com/user/CredditReportingBot/comments/d4ar2f/about_me/" target="_blank" id="reddit_u_credditreportingbot_out">/u/CredditReportingBot</a>. The score scales from 0 (highest risk) to 1,000 (lowest risk), with the relative risk doubling every 100 points. Below is a set of box plots comparing the risk scores of the four subreddits' userbases: </p>
+
+<p><i>Note: I consider scores of under 200 to be "high risk", under 300 "moderately high risk", and under 400 "slightly elevated risk".</i></p>
+
+<!-- begin.rcode creddit_risk, echo=FALSE, message=FALSE, warning=FALSE, fig.width=11, fig.height=10
+print(
+ggplot(creddit) +
+  geom_boxplot(aes(x=subreddit, y=score, fill=subreddit)) + 
+  facet_grid(type~.) + 
+  coord_flip() + 
+  ggtitle('Reddit Ban Risk Score Profile of Hong Kong-related Subreddits', subtitle='0 = highest risk, 1,000 = lowest; risk halves every 100 points; \nsee /u/CredditReportingBot') +
+  ylab('Risk Score (0=highest risk, 1,000=lowest risk)') + 
+  xlab('Subreddit') +
+  scale_y_continuous(breaks=seq(0,1000, 100)) +
+  theme_bw() + 
+  geom_abline(slope=0, intercept=c(200,400), lty='dashed', color='red') + 
+  scale_fill_discrete('Subreddit', cet_pal(4, 'rainbow')) + 
+  theme_readable + theme(axis.text=element_text(size=rel(1.5)), plot.title=element_text(size=rel(2.0)))
+)
+end.rcode-->
+
+<p> /r/China and /r/Hong_Kong have fairly similar risk profiles, and /r/HongKong is noticeably lower, with about half the risk of the other subreddits when looking at commenters. The risk is about one quarter for those who post to /r/HongKong versus the other groups. /r/Sino members are at the highest risk of being banned. </p>
+
+<h2> Comments </h2>
+
+<h3> Unscaled (most popular subreddits)</h3>
+<!-- begin.rcode coms1, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9,fig.height=8
+print(
+ggplot(selected_comments) +
+  geom_bar(aes(x=rank, y=weight, fill=source), stat='identity') + 
+  geom_label(aes(x=rank, y=weight + (1:length(rank) %% 2 - 0.5) * (nchar(target) > 12) * shift_factor, label=target), alpha=0.7, size=3) +
+  facet_grid(source~.) +
+  scale_x_discrete('Rank') + 
+  scale_fill_discrete('Subreddit', cet_pal(4, 'rainbow')) + 
+  ylab('Relative Occurrence') + 
+  ggtitle('Relative Popularity of Subreddits Related to Hong Kong',subtitle='Based on users who commented 3+ times in both subreddits, unscaled.') + 
+  theme_bw() + theme_readable
+)
+end.rcode-->
+  
+  
+<h3> Scaled to Overall Populations (what sets this apart from the rest of Reddit)</h3>
+<!-- begin.rcode comments2, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9,fig.height=8
+print(
+ggplot(selected_comments_adj) +
+  geom_bar(aes(x=rank, y=adj_weight, fill=source), stat='identity') + 
+  geom_label(aes(x=rank, y=adj_weight + (1:length(rank) %% 2 - 0.5) * (nchar(target) > 12) * shift_factor, label=target), alpha=0.7, size=3) +
+  facet_grid(source~.) +
+  scale_x_discrete('Rank') + 
+  scale_fill_discrete('Subreddit', cet_pal(4, 'rainbow')) + 
+  ylab('Relative Occurrence') + 
+  ggtitle('Relative Popularity of Subreddits Related to Hong Kong',subtitle='Based on users who commented 3+ times in both subreddits, scaled by approximate size of subreddit userbase.') + 
+  theme_bw()+ theme_readable
+)
+end.rcode-->
+
+<h3> Scaled to Sample Populations (what sets this apart from the other 3 subreddits)</h3>
+<!-- begin.rcode comments3, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9,fig.height=8
+print(
+ggplot(selected_comments_adjh) +
+  geom_bar(aes(x=rank, y=adj_weight, fill=source), stat='identity') + 
+  geom_label(aes(x=rank, y=adj_weight + (1:length(rank) %% 2 - 0.5) * (nchar(target) > 12) * shift_factor, label=target), alpha=0.7, size=3) +
+  facet_grid(source~.) +
+  scale_x_discrete('Rank') + 
+  scale_fill_discrete('Subreddit', cet_pal(4, 'rainbow')) + 
+  ylab('Relative Occurrence') + 
+  ggtitle('Relative Popularity of Subreddits Related to Hong Kong',subtitle='Based on users who commented 3+ times in both subreddits, scaled by approximate size of subreddit userbase from sample.') + 
+  theme_bw()+ theme_readable
+)
+end.rcode-->
+
+<p> Looking at the above, there are a few things to note: </p>
+
+<ol id="hongkong_comments_notes" >
+<li> It appears that /r/Hong_Kong has a lot of similarities with /r/HongKong. This suggests that a non-trivial portion of the comments from that subreddit came from "brigaders" from /r/HongKong, who do not normally participate in /r/Hong_Kong. This is especially noticeable because the most common subreddits are associated with both of them, but /r/HongKong vastly outnumbers /r/Hong_Kong in subscriber count.</li>
+<li>/r/Sino is distinctively left-leaning from any 3 ways of scaling the population.</li>
+<li>/r/Hong_Kong is only particularly notable in its participation in /r/Sino, /r/HongKong, and /r/China compared to the rest of Reddit, while those other 3 subreddits have more distinctive features. This is not too surprising given its relatively smaller size and recent events. </li>
+
+</ol>
+
+<h2> Submissions </h2>
+
+<p> Looking at submission-based statistics, the results are similar to the comments-based ones, but because of increased scrutiny of submissions vs. comments by moderators, these are often more representative of the general view of the community, even in spite of brigaders. The relationship of /r/Hong_Kong to /r/Sino becomes a bit more clear, and the submissions of /r/China submitters seems to be slanted more towards regional subreddits (e.g., Africa, Guangzhou) instead of <i>only</i> China-related ones.</p>
+
+<h3> Unscaled (most popular subreddits)</h3>
+
+<!-- begin.rcode threads1, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9,fig.height=8
+print(
+ggplot(selected_threads) +
+  geom_bar(aes(x=rank, y=weight, fill=source), stat='identity') + 
+  geom_label(aes(x=rank, y=weight + (1:length(rank) %% 2 - 0.5) * (nchar(target) > 12) * shift_factor, label=target), alpha=0.7, size=3) +
+  facet_grid(source~.) +
+  scale_x_discrete('Rank') + 
+  scale_fill_discrete('Subreddit', cet_pal(4, 'rainbow')) + 
+  ylab('Relative Occurrence') + 
+  ggtitle('Relative Popularity of Subreddits Related to Hong Kong',subtitle='Based on users who made submissions in both subreddits, unscaled.') + 
+  theme_bw()+ theme_readable
+)
+end.rcode-->
+
+<h3> Scaled to Overall Populations (what sets this apart from the rest of Reddit)</h3>
+
+<!-- begin.rcode threads2, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9,fig.height=8
+print(
+ggplot(selected_threads_adj) +
+  geom_bar(aes(x=rank, y=adj_weight, fill=source), stat='identity') + 
+  geom_label(aes(x=rank, y=adj_weight + (1:length(rank) %% 2 - 0.5) * (nchar(target) > 12) * shift_factor, label=target), alpha=0.7, size=3) +
+  facet_grid(source~.) +
+  scale_x_discrete('Rank') + 
+  scale_fill_discrete('Subreddit', cet_pal(4, 'rainbow')) + 
+  ylab('Relative Occurrence') + 
+  ggtitle('Relative Popularity of Subreddits Related to Hong Kong',subtitle='Based on users who made submissions in both subreddits, scaled by approximate size of subreddit userbase.') + 
+  theme_bw()+ theme_readable
+)
+end.rcode-->
+
+<h3> Scaled to Sample Populations (what sets this apart from the other 3 subreddits)</h3>
+
+<!-- begin.rcode threads3, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9,fig.height=8
+print(
+ggplot(selected_threads_adjh) +
+  geom_bar(aes(x=rank, y=adj_weight, fill=source), stat='identity') + 
+  geom_label(aes(x=rank, y=adj_weight + (1:length(rank) %% 2 - 0.5) * (nchar(target) > 12) * shift_factor, label=target), alpha=0.7, size=3) +
+  facet_grid(source~.) +
+  scale_x_discrete('Rank') + 
+  scale_fill_discrete('Subreddit', cet_pal(4, 'rainbow')) + 
+  ylab('Relative Occurrence') + 
+  ggtitle('Relative Popularity of Subreddits Related to Hong Kong',subtitle='Based on users who made submissions in both subreddits, scaled by approximate size of subreddit userbase from sample.') + 
+  theme_bw()+ theme_readable
+)
+end.rcode-->
+
+
+
